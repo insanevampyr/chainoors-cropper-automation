@@ -260,8 +260,6 @@ class Vision:
             slot_image = roi[rect[1] : rect[1] + rect[3], rect[0] : rect[0] + rect[2]]
             slot_mask = mask[rect[1] : rect[1] + rect[3], rect[0] : rect[0] + rect[2]]
             gold_density = float(np.count_nonzero(slot_mask)) / float(slot_mask.size)
-            if gold_density < config.GOLD_SLOT_DENSITY_THRESHOLD:
-                continue
             crop_score = self._template_score(slot_image, self.templates.get("crop"))
             max_feed_template = None
             max_feed_score = 0.0
@@ -273,6 +271,16 @@ class Vision:
 
             decision = "accepted"
 
+            if gold_density < config.GOLD_SLOT_DENSITY_THRESHOLD:
+                decision = "rejected_low_gold_density"
+                print(
+                    f"CANDIDATE rect={(x0 + rect[0], y0 + rect[1], rect[2], rect[3])} "
+                    f"crop_score={crop_score:.3f} max_feed_score={max_feed_score:.3f} "
+                    f"gold_density={gold_density:.3f} "
+                    f"max_feed_template={max_feed_template} decision={decision}"
+                )
+                continue
+
             reject_as_feed = (
                 max_feed_score >= 0.85
                 or (max_feed_score >= 0.70 and max_feed_score >= crop_score)
@@ -283,15 +291,21 @@ class Vision:
                 print(
                     f"CANDIDATE rect={(x0 + rect[0], y0 + rect[1], rect[2], rect[3])} "
                     f"crop_score={crop_score:.3f} max_feed_score={max_feed_score:.3f} "
+                    f"gold_density={gold_density:.3f} "
                     f"max_feed_template={max_feed_template} decision={decision}"
                 )
                 continue
 
-            if crop_score < 0.70:
+            if not (
+                crop_score >= 0.50
+                and crop_score >= max_feed_score + 0.10
+                and gold_density >= 0.18
+            ):
                 decision = "rejected_low_crop"
                 print(
                     f"CANDIDATE rect={(x0 + rect[0], y0 + rect[1], rect[2], rect[3])} "
                     f"crop_score={crop_score:.3f} max_feed_score={max_feed_score:.3f} "
+                    f"gold_density={gold_density:.3f} "
                     f"max_feed_template={max_feed_template} decision={decision}"
                 )
                 continue
@@ -299,6 +313,7 @@ class Vision:
             print(
                 f"CANDIDATE rect={(x0 + rect[0], y0 + rect[1], rect[2], rect[3])} "
                 f"crop_score={crop_score:.3f} max_feed_score={max_feed_score:.3f} "
+                f"gold_density={gold_density:.3f} "
                 f"max_feed_template={max_feed_template} decision={decision}"
             )
 
