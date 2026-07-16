@@ -227,13 +227,9 @@ class Vision:
             f"COUNTER DEBUG: raw_region={(x, y, w, h)} "
             f"expanded_region={expanded_region}"
         )
-        try:
-            counter_value = self.read_counter(screen)
-            print(f"COUNTER OCR VALUE: {counter_value}/12")
-            return counter_value == 12
-        except RuntimeError as exc:
-            print(f"COUNTER OCR ERROR: {exc}")
-            return False
+        counter_value = self.read_counter(screen)
+        print(f"COUNTER OCR VALUE: {counter_value}/12")
+        return counter_value == 12
 
     def find_valid_crop_slots(self, screen):
         x0, y0, w, h = config.LEFT_PANEL_REGION
@@ -297,8 +293,8 @@ class Vision:
                 continue
 
             if not (
-                crop_score >= 0.50
-                and crop_score >= max_feed_score + 0.10
+                crop_score >= config.CROP_MATCH_THRESHOLD
+                and crop_score > max_feed_score
                 and gold_density >= 0.18
             ):
                 decision = "rejected_low_crop"
