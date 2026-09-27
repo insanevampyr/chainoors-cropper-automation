@@ -20,6 +20,8 @@ class SlotCandidate:
     top: int
     feed_score: float
     crop_score: float
+    priority_crop: str | None
+    priority_score: float
 
 
 class Vision:
@@ -39,6 +41,19 @@ class Vision:
             "feed_pumpkin_pig",
             "feed_deer",
         ]
+        self.priority_corn_selected = 0
+        self.priority_peas_selected = 0
+        self.last_priority_selected = None
+        self.priority_templates = {}
+        if config.PRIORITY_CROPS_ENABLED:
+            print("PRIORITY CROPS: ENABLED")
+            self.priority_templates = {
+                "corn": self._load_template(config.ASSETS_DIR / "corn_crop.png"),
+                "peas": self._load_template(config.ASSETS_DIR / "peas_crop.png"),
+            }
+        else:
+            print("PRIORITY CROPS: DISABLED")
+        self.priority_crop_match_threshold = 0.90
         if self.templates["crop"] is None:
             raise FileNotFoundError("Missing required template: crop.png")
         if self.templates["counter_full_12_12"] is None:
@@ -48,6 +63,9 @@ class Vision:
         for template_name in self.feed_template_names:
             if self.templates[template_name] is None:
                 raise FileNotFoundError(f"Missing required template: {config.TEMPLATE_PATHS[template_name].name}")
+        for crop_name, template in self.priority_templates.items():
+            if template is None:
+                raise FileNotFoundError(f"Missing required template: {crop_name}_crop.png")
 
     def _load_template(self, path: Path):
         if not path.exists():
@@ -306,12 +324,31 @@ class Vision:
                 )
                 continue
 
-            print(
+            priority_crop = None
+            priority_score = 0.0
+            priority_scores = None
+            if config.PRIORITY_CROPS_ENABLED:
+                priority_scores = {
+                    crop_name: self._template_score(slot_image, template)
+                    for crop_name, template in self.priority_templates.items()
+                }
+                priority_crop = max(priority_scores, key=priority_scores.get)
+                priority_score = priority_scores[priority_crop]
+                if priority_score < self.priority_crop_match_threshold:
+                    priority_crop = None
+
+            accepted_log = (
                 f"CANDIDATE rect={(x0 + rect[0], y0 + rect[1], rect[2], rect[3])} "
                 f"crop_score={crop_score:.3f} max_feed_score={max_feed_score:.3f} "
                 f"gold_density={gold_density:.3f} "
                 f"max_feed_template={max_feed_template} decision={decision}"
             )
+            if priority_scores is not None:
+                accepted_log += (
+                    f" priority_corn={priority_scores['corn']:.3f}"
+                    f" priority_peas={priority_scores['peas']:.3f}"
+                )
+            print(accepted_log)
 
             abs_rect = (x0 + rect[0], y0 + rect[1], rect[2], rect[3])
             candidates.append(
@@ -321,10 +358,66 @@ class Vision:
                     top=abs_rect[1],
                     feed_score=max_feed_score,
                     crop_score=crop_score,
+                    priority_crop=priority_crop,
+                    priority_score=priority_score,
                 )
             )
 
-        return self._dedupe_and_sort(candidates)
+        ordered_candidates = self._dedupe_and_sort(candidates)
+        if not config.PRIORITY_CROPS_ENABLED:
+            return ordered_candidates
+
+        priority_crop = self._choose_priority_crop(ordered_candidates)
+        if priority_crop is not None:
+            selected = next(
+                candidate
+                for candidate in ordered_candidates
+                if candidate.priority_crop == priority_crop
+            )
+            ordered_candidates = [selected] + [
+                candidate for candidate in ordered_candidates if candidate is not selected
+            ]
+
+        if ordered_candidates and ordered_candidates[0].priority_crop is not None:
+            selected = ordered_candidates[0]
+            if selected.priority_crop == "corn":
+                self.priority_corn_selected += 1
+            else:
+                self.priority_peas_selected += 1
+            self.last_priority_selected = selected.priority_crop
+            print(
+                f"PRIORITY CROP SELECTED: {selected.priority_crop} "
+                f"score={selected.priority_score:.3f} "
+                f"center=({selected.center[0]}, {selected.center[1]}) "
+                f"counts corn={self.priority_corn_selected} "
+                f"peas={self.priority_peas_selected}"
+            )
+        return ordered_candidates
+
+    def _choose_priority_crop(self, ordered_candidates):
+        corn_visible = any(candidate.priority_crop == "corn" for candidate in ordered_candidates)
+        peas_visible = any(candidate.priority_crop == "peas" for candidate in ordered_candidates)
+
+        if corn_visible and peas_visible:
+            if self.priority_corn_selected < self.priority_peas_selected:
+                return "corn"
+            if self.priority_peas_selected < self.priority_corn_selected:
+                return "peas"
+            if self.last_priority_selected == "corn":
+                return "peas"
+            if self.last_priority_selected == "peas":
+                return "corn"
+            return next(
+                candidate.priority_crop
+                for candidate in ordered_candidates
+                if candidate.priority_crop is not None
+            )
+
+        if corn_visible and self.priority_corn_selected <= self.priority_peas_selected:
+            return "corn"
+        if peas_visible and self.priority_peas_selected <= self.priority_corn_selected:
+            return "peas"
+        return None
 
     def _expand_rect(self, rect, max_width, max_height):
         x, y, w, h = rect
